@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,10 @@ import (
 // a --partial push reuses it as the delta basis, then commits and drops it.
 func TestDaemonReceiverResumesFromPartial(t *testing.T) {
 	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows CI uses Cygwin rsync, which mangles native Windows source paths in these daemon push tests")
+	}
 
 	rsyncBin := rsynctest.TridgeOrGTFO(t, "resume needs a real rsync client to push with --partial")
 
@@ -85,6 +90,10 @@ func TestDaemonReceiverResumesFromPartial(t *testing.T) {
 // daemon retains "<name>.partial" itself, then a second push resumes against it.
 func TestDaemonReceiverResumesAfterInterrupt(t *testing.T) {
 	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows CI uses Cygwin rsync, which mangles native Windows source paths in these daemon push tests")
+	}
 
 	rsyncBin := rsynctest.TridgeOrGTFO(t, "resume-after-interrupt needs a real rsync client")
 
