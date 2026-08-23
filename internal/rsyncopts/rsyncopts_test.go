@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/runpod/rsync/internal/rsyncostest"
 	"github.com/google/go-cmp/cmp"
+	"github.com/runpod/rsync/internal/rsyncostest"
 )
 
 // See testdata/_tridge_rsync_dump_table.patch for the corresponding

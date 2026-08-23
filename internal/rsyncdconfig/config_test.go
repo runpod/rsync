@@ -3,9 +3,9 @@ package rsyncdconfig_test
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/runpod/rsync/internal/rsyncdconfig"
 	"github.com/runpod/rsync/rsyncd"
-	"github.com/google/go-cmp/cmp"
 )
 
 func TestConfig(t *testing.T) {

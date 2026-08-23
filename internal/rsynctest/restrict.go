@@ -3,8 +3,8 @@ package rsynctest
 import (
 	"os"
 
-	"github.com/runpod/rsync/internal/restrict"
 	"github.com/landlock-lsm/go-landlock/landlock"
+	"github.com/runpod/rsync/internal/restrict"
 )
 
 func init() {

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/runpod/rsync/internal/rsynctest"
 	"github.com/runpod/rsync/internal/testlogger"
 	"github.com/runpod/rsync/rsyncd"
-	"github.com/google/go-cmp/cmp"
 )
 
 func TestMain(m *testing.M) {

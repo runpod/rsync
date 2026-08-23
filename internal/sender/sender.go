@@ -7,11 +7,11 @@ import (
 	"os"
 	"sort"
 
+	"github.com/mmcloughlin/md4"
 	"github.com/runpod/rsync"
 	"github.com/runpod/rsync/internal/rsyncchecksum"
 	"github.com/runpod/rsync/internal/rsynccommon"
 	"github.com/runpod/rsync/internal/rsyncopts"
-	"github.com/mmcloughlin/md4"
 	"golang.org/x/sync/errgroup"
 )
 

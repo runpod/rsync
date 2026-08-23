@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runpod/rsync/internal/rsynctest"
 	"github.com/google/go-cmp/cmp"
+	"github.com/runpod/rsync/internal/rsynctest"
 )
 
 func init() {

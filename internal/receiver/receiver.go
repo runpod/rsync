@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mmcloughlin/md4"
 	"github.com/runpod/rsync"
 	"github.com/runpod/rsync/internal/rsyncopts"
-	"github.com/mmcloughlin/md4"
 )
 
 // rsync/receiver.c:recv_files

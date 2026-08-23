@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/shlex"
 	"github.com/runpod/rsync"
 	"github.com/runpod/rsync/internal/progress"
 	"github.com/runpod/rsync/internal/receiver"
@@ -21,7 +22,6 @@ import (
 	"github.com/runpod/rsync/internal/rsyncstats"
 	"github.com/runpod/rsync/internal/rsyncwire"
 	"github.com/runpod/rsync/internal/sender"
-	"github.com/google/shlex"
 )
 
 // rsync/main.c:start_client

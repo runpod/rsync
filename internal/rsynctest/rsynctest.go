@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/runpod/rsync"
 	"github.com/runpod/rsync/internal/anonssh"
 	"github.com/runpod/rsync/internal/maincmd"
@@ -29,7 +30,6 @@ import (
 	"github.com/runpod/rsync/rsyncclient"
 	"github.com/runpod/rsync/rsynccmd"
 	"github.com/runpod/rsync/rsyncd"
-	"github.com/google/go-cmp/cmp"
 )
 
 // GosPublicRelease is the time when Go was publicly released:

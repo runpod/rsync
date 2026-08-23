@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/runpod/rsync"
 	"github.com/runpod/rsync/internal/rsyncopts"
 	"github.com/runpod/rsync/internal/rsyncos"
@@ -19,7 +20,6 @@ import (
 	"github.com/runpod/rsync/internal/testlogger"
 	"github.com/runpod/rsync/rsyncclient"
 	"github.com/runpod/rsync/rsyncd"
-	"github.com/google/go-cmp/cmp"
 )
 
 func ExampleClient_Run_receiveFromSubprocess() {

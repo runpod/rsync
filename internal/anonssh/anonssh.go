@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/shlex"
 	"github.com/runpod/rsync/internal/rsyncdconfig"
 	"github.com/runpod/rsync/internal/rsyncos"
-	"github.com/google/shlex"
 	"golang.org/x/crypto/ssh"
 )
 

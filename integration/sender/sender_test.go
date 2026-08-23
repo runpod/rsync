@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/runpod/rsync/internal/rsynctest"
 	"github.com/runpod/rsync/internal/testlogger"
-	"github.com/google/go-cmp/cmp"
 )
 
 func TestMain(m *testing.M) {
