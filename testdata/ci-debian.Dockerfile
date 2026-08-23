@@ -1,5 +1,8 @@
 # vim:ft=Dockerfile
-FROM debian:sid
+# Pinned to the current stable release rather than sid: sid ships rsync 3.5.0,
+# whose hardened path traversal (RsyncProject/rsync#1050) fails change_dir with
+# "Permission denied (13)" against the test tmp dirs. Stable stays on 3.4.x.
+FROM debian:trixie
 
 RUN echo force-unsafe-io > /etc/dpkg/dpkg.cfg.d/docker-apt-speedup
 # Paper over occasional network flakiness of some mirrors.
