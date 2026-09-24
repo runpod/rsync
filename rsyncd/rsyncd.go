@@ -66,6 +66,22 @@ func DontRestrict() Option {
 	})
 }
 
+// ModuleResolver returns the module to serve to a single connection, given the
+// client's address and the module name it requested. Returning an error rejects
+// the connection.
+type ModuleResolver func(remoteAddr, requestedModule string) (Module, error)
+
+// WithModuleResolver serves a module computed per connection instead of looking
+// one up in the static list, so the served path can depend on who is calling.
+//
+// Because the paths are not known until a client connects, restrictToModules
+// cannot be applied and DontRestrict is required.
+func WithModuleResolver(resolve ModuleResolver) Option {
+	return serverOptionFunc(func(s *Server) {
+		s.resolveModule = resolve
+	})
+}
+
 func NewServer(modules []Module, opts ...Option) (*Server, error) {
 	for _, mod := range modules {
 		if err := validateModule(mod); err != nil {
@@ -96,6 +112,10 @@ func NewServer(modules []Module, opts ...Option) (*Server, error) {
 	// (e.g. started in command mode with --server --sender),
 	// in which case restrict.MaybeFileSystem() will be called
 	// by the caller of NewServer().
+	if server.resolveModule != nil && !server.dontRestrict {
+		return nil, errors.New("WithModuleResolver requires DontRestrict: the paths to restrict to are not known until a client connects")
+	}
+
 	if !server.dontRestrict && len(server.modules) > 0 {
 		if err := restrictToModules(server.modules); err != nil {
 			return nil, err
@@ -110,10 +130,22 @@ type Server struct {
 	logger       log.Logger
 	dontRestrict bool
 
-	modules []Module
+	modules       []Module
+	resolveModule ModuleResolver
 }
 
-func (s *Server) getModule(requestedModule string) (Module, error) {
+func (s *Server) getModule(remoteAddr, requestedModule string) (Module, error) {
+	if s.resolveModule != nil {
+		mod, err := s.resolveModule(remoteAddr, requestedModule)
+		if err != nil {
+			return Module{}, err
+		}
+		if err := validateModule(mod); err != nil {
+			return Module{}, fmt.Errorf("resolved module: %w", err)
+		}
+		return mod, nil
+	}
+
 	for _, mod := range s.modules {
 		if mod.Name == requestedModule {
 			return mod, nil
@@ -218,7 +250,7 @@ func (s *Server) HandleDaemonConn(ctx context.Context, conn *Conn) (err error) {
 		return nil
 	}
 	s.logger.Printf("client %v requested rsync module %q", conn.name, requestedModule)
-	module, err := s.getModule(requestedModule)
+	module, err := s.getModule(conn.name, requestedModule)
 	if err != nil {
 		fmt.Fprintf(cwr, "@ERROR: Unknown module %q\n", requestedModule)
 		return err
