@@ -122,10 +122,19 @@ func writeTree(t *testing.T, root, marker string) {
 	}
 }
 
-func push(t *testing.T, rsyncBin, srcDir, target string) error {
+// push sends the contents of srcDir to a module path on the daemon. The source
+// is named relative to cmd.Dir rather than absolutely: Windows CI uses Cygwin
+// rsync, which reads the colon in "C:\..." as a host separator and refuses the
+// command line as two remotes. The port goes in a flag for the same reason.
+func push(t *testing.T, rsyncBin, port, srcDir, modulePath string) error {
 	t.Helper()
 
-	cmd := exec.Command(rsyncBin, "--archive", srcDir+"/", target)
+	cmd := exec.Command(rsyncBin,
+		"--archive",
+		"--port="+port,
+		filepath.Base(srcDir)+"/",
+		"rsync://localhost/"+modulePath)
+	cmd.Dir = filepath.Dir(srcDir)
 	cmd.Env = append(os.Environ(), "LANG=C.UTF-8")
 	cmd.Stdout = testlogger.New(t)
 	cmd.Stderr = testlogger.New(t)
@@ -164,7 +173,7 @@ func TestModuleResolverRoutesConcurrentConnections(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = push(t, rsyncBin, m.src, fmt.Sprintf("rsync://localhost:%s/%s/", port, m.id))
+			errs[i] = push(t, rsyncBin, port, m.src, m.id+"/")
 		}()
 	}
 	wg.Wait()
@@ -210,7 +219,7 @@ func TestModuleResolverConfinesToResolvedRoot(t *testing.T) {
 	port, _ := serveResolved(t, reg.resolve)
 
 	// Authorised for one migration, aiming at the other migration's directory name.
-	err := push(t, rsyncBin, src, fmt.Sprintf("rsync://localhost:%s/migration-mine/vol-victim/", port))
+	err := push(t, rsyncBin, port, src, "migration-mine/vol-victim/")
 	if err != nil {
 		t.Fatalf("push failed: %v", err)
 	}
@@ -249,7 +258,7 @@ func TestModuleResolverRejectsUnknownAndUnauthorised(t *testing.T) {
 		{"migration pinned to a different source", "migration-elsewhere"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := push(t, rsyncBin, src, fmt.Sprintf("rsync://localhost:%s/%s/", port, tc.module)); err == nil {
+			if err := push(t, rsyncBin, port, src, tc.module+"/"); err == nil {
 				t.Fatal("expected the client to fail")
 			}
 			if _, statErr := os.Stat(filepath.Join(dst, "data", "marker")); !os.IsNotExist(statErr) {
