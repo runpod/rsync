@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/runpod/rsync/internal/rsynctest"
 	"github.com/runpod/rsync/internal/testlogger"
@@ -46,8 +47,11 @@ func (r *migrationRegistry) resolve(remoteAddr, requestedModule string) (rsyncd.
 }
 
 // serveResolved runs the daemon over its own accept loop rather than Serve, so
-// each connection's outcome is observable. Results are keyed by remote address.
-func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, results *sync.Map) {
+// each connection's outcome is observable. Outcomes arrive on the returned
+// channel, one per connection. It has to be a channel rather than a map the
+// test reads at the end: the daemon writes its refusal to the client before
+// returning, so the client can exit while the outcome is still in flight.
+func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, outcomes <-chan error) {
 	t.Helper()
 
 	srv, err := rsyncd.NewServer(nil,
@@ -68,7 +72,9 @@ func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, re
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	results = &sync.Map{}
+	// Buffered past the number of connections any test makes, so a handler
+	// never blocks on a test that is not reading.
+	served := make(chan error, 8)
 	go func() {
 		for {
 			conn, acceptErr := ln.Accept()
@@ -79,7 +85,7 @@ func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, re
 				defer conn.Close()
 				remoteAddr := conn.RemoteAddr().String()
 				c := rsyncd.NewConnection(conn, conn, remoteAddr)
-				results.Store(remoteAddr, srv.HandleDaemonConn(ctx, c))
+				served <- srv.HandleDaemonConn(ctx, c)
 			}()
 		}
 	}()
@@ -88,7 +94,21 @@ func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, re
 	if err != nil {
 		t.Fatalf("split listener address: %v", err)
 	}
-	return port, results
+	return port, served
+}
+
+// awaitOutcome returns the next connection outcome, failing the test rather
+// than hanging if the daemon never reports one.
+func awaitOutcome(t *testing.T, outcomes <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-outcomes:
+		return err
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for the daemon to report a connection outcome")
+		return nil
+	}
 }
 
 func writeTree(t *testing.T, root, marker string) {
@@ -222,7 +242,7 @@ func TestModuleResolverRejectsUnknownAndUnauthorised(t *testing.T) {
 		dir:        map[string]string{"migration-known": dst, "migration-elsewhere": dst},
 		sourceAddr: map[string]string{"migration-elsewhere": "192.0.2.1"},
 	}
-	port, results := serveResolved(t, reg.resolve)
+	port, outcomes := serveResolved(t, reg.resolve)
 
 	for _, tc := range []struct{ name, module string }{
 		{"unknown migration", "migration-unknown"},
@@ -235,19 +255,12 @@ func TestModuleResolverRejectsUnknownAndUnauthorised(t *testing.T) {
 			if _, statErr := os.Stat(filepath.Join(dst, "data", "marker")); !os.IsNotExist(statErr) {
 				t.Fatalf("rejected connection still wrote data: %v", statErr)
 			}
-		})
-	}
 
-	// A rejected connection must be reported, not silently dropped, so a caller
-	// can tell a refusal from a completed transfer.
-	var sawError bool
-	results.Range(func(_, v any) bool {
-		if v != nil {
-			sawError = true
-		}
-		return !sawError
-	})
-	if !sawError {
-		t.Error("no connection reported an error")
+			// The refusal must be reported, not silently dropped, so a caller
+			// can tell a refusal from a completed transfer.
+			if err := awaitOutcome(t, outcomes); err == nil {
+				t.Error("connection reported success despite being refused")
+			}
+		})
 	}
 }
