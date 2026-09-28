@@ -66,9 +66,13 @@ func DontRestrict() Option {
 	})
 }
 
-// ModuleResolver returns the module to serve to a single connection, given the
-// client's address and the module name it requested. Returning an error rejects
-// the connection.
+// ModuleResolver returns the module to serve to a single connection. Returning
+// an error rejects the connection.
+//
+// Name must equal requestedModule; renaming would misplace the transfer.
+//
+// remoteAddr is whatever the caller passed to NewConnection — the peer address
+// from Serve, but a placeholder like "<remote-shell-daemon>" for stdio.
 type ModuleResolver func(remoteAddr, requestedModule string) (Module, error)
 
 // WithModuleResolver serves a module computed per connection instead of looking
@@ -142,6 +146,11 @@ func (s *Server) getModule(remoteAddr, requestedModule string) (Module, error) {
 		}
 		if err := validateModule(mod); err != nil {
 			return Module{}, fmt.Errorf("resolved module: %w", err)
+		}
+		// Paths are stripped of the resolved Name, so a rename would leave the
+		// requested prefix in place and write a directory too deep.
+		if mod.Name != requestedModule {
+			return Module{}, fmt.Errorf("resolved module %q does not match requested module %q", mod.Name, requestedModule)
 		}
 		return mod, nil
 	}

@@ -47,10 +47,9 @@ func (r *migrationRegistry) resolve(remoteAddr, requestedModule string) (rsyncd.
 }
 
 // serveResolved runs the daemon over its own accept loop rather than Serve, so
-// each connection's outcome is observable. Outcomes arrive on the returned
-// channel, one per connection. It has to be a channel rather than a map the
-// test reads at the end: the daemon writes its refusal to the client before
-// returning, so the client can exit while the outcome is still in flight.
+// each connection's outcome is observable. Outcomes must be awaited rather than
+// sampled: the daemon writes its refusal before returning, so the client can
+// exit while the outcome is still in flight.
 func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, outcomes <-chan error) {
 	t.Helper()
 
@@ -72,8 +71,7 @@ func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, ou
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	// Buffered past the number of connections any test makes, so a handler
-	// never blocks on a test that is not reading.
+	// Buffered past any test's connection count so a handler never blocks.
 	served := make(chan error, 8)
 	go func() {
 		for {
@@ -123,9 +121,8 @@ func writeTree(t *testing.T, root, marker string) {
 }
 
 // push sends the contents of srcDir to a module path on the daemon. The source
-// is named relative to cmd.Dir rather than absolutely: Windows CI uses Cygwin
-// rsync, which reads the colon in "C:\..." as a host separator and refuses the
-// command line as two remotes. The port goes in a flag for the same reason.
+// is relative and the port a flag because Cygwin rsync on Windows CI reads the
+// colon in "C:\..." as a host separator.
 func push(t *testing.T, rsyncBin, port, srcDir, modulePath string) error {
 	t.Helper()
 
@@ -265,11 +262,48 @@ func TestModuleResolverRejectsUnknownAndUnauthorised(t *testing.T) {
 				t.Fatalf("rejected connection still wrote data: %v", statErr)
 			}
 
-			// The refusal must be reported, not silently dropped, so a caller
-			// can tell a refusal from a completed transfer.
+			// A caller must be able to tell a refusal from a completed transfer.
 			if err := awaitOutcome(t, outcomes); err == nil {
 				t.Error("connection reported success despite being refused")
 			}
 		})
+	}
+}
+
+// TestModuleResolverRejectsRenamedModule covers a resolver serving a name other
+// than the one requested, which would write a directory too deep rather than fail.
+func TestModuleResolverRejectsRenamedModule(t *testing.T) {
+	t.Parallel()
+
+	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "vol")
+	writeTree(t, src, "data")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Right directory, wrong name: only the name differs.
+	renaming := func(_, _ string) (rsyncd.Module, error) {
+		return rsyncd.Module{Name: "canonical-name", Path: dst, Writable: true}, nil
+	}
+	port, outcomes := serveResolved(t, renaming)
+
+	if err := push(t, rsyncBin, port, src, "requested-name/"); err == nil {
+		t.Fatal("expected the client to fail")
+	}
+	if err := awaitOutcome(t, outcomes); err == nil {
+		t.Error("connection reported success despite serving a renamed module")
+	}
+
+	for _, path := range []string{
+		filepath.Join(dst, "data", "marker"),
+		filepath.Join(dst, "requested-name", "data", "marker"),
+	} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Errorf("rejected connection wrote %s: %v", path, statErr)
+		}
 	}
 }
