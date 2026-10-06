@@ -2,12 +2,14 @@ package rsyncd_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +55,15 @@ func (r *migrationRegistry) resolve(remoteAddr, requestedModule string) (rsyncd.
 func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, outcomes <-chan error) {
 	t.Helper()
 
+	return serveResolvedWithAccept(t, nil, resolve)
+}
+
+// serveResolvedWithAccept additionally runs onAccept for each connection before
+// the client names a module, which is where a caller gating connections at the
+// listener records what it approved.
+func serveResolvedWithAccept(t *testing.T, onAccept func(remoteAddr string), resolve rsyncd.ModuleResolver) (port string, outcomes <-chan error) {
+	t.Helper()
+
 	srv, err := rsyncd.NewServer(nil,
 		rsyncd.WithModuleResolver(resolve),
 		rsyncd.WithStderr(os.Stderr),
@@ -79,9 +90,12 @@ func serveResolved(t *testing.T, resolve rsyncd.ModuleResolver) (port string, ou
 			if acceptErr != nil {
 				return
 			}
+			remoteAddr := conn.RemoteAddr().String()
+			if onAccept != nil {
+				onAccept(remoteAddr)
+			}
 			go func() {
 				defer conn.Close()
-				remoteAddr := conn.RemoteAddr().String()
 				c := rsyncd.NewConnection(conn, conn, remoteAddr)
 				served <- srv.HandleDaemonConn(ctx, c)
 			}()
@@ -162,7 +176,7 @@ func TestModuleResolverRoutesConcurrentConnections(t *testing.T) {
 		reg.dir[m.id] = m.dst
 	}
 
-	port, _ := serveResolved(t, reg.resolve)
+	port, outcomes := serveResolved(t, reg.resolve)
 
 	var wg sync.WaitGroup
 	errs := make([]error, len(migrations))
@@ -186,6 +200,14 @@ func TestModuleResolverRoutesConcurrentConnections(t *testing.T) {
 		}
 		if string(got) != m.id {
 			t.Errorf("%s: landed in the wrong root: marker = %q", m.id, got)
+		}
+	}
+
+	// A nil outcome is how a caller learns a transfer finished, so it has to be
+	// asserted and not just inferred from the client exiting 0.
+	for range migrations {
+		if err := awaitOutcome(t, outcomes); err != nil {
+			t.Errorf("completed transfer reported an error: %v", err)
 		}
 	}
 }
@@ -267,6 +289,119 @@ func TestModuleResolverRejectsUnknownAndUnauthorised(t *testing.T) {
 				t.Error("connection reported success despite being refused")
 			}
 		})
+	}
+}
+
+// TestModuleResolverRetryAfterRejection covers a resolver refusing while the
+// destination is not ready yet. The refusal has to leave the server able to
+// serve the same module later, so a caller can treat it as "retry" rather than
+// as a permanent failure.
+func TestModuleResolverRetryAfterRejection(t *testing.T) {
+	t.Parallel()
+
+	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "vol")
+	writeTree(t, src, "payload")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var ready atomic.Bool
+	resolve := func(_, requestedModule string) (rsyncd.Module, error) {
+		if !ready.Load() {
+			return rsyncd.Module{}, errors.New("destination not ready")
+		}
+		return rsyncd.Module{Name: requestedModule, Path: dst, Writable: true}, nil
+	}
+	port, outcomes := serveResolvedWithAccept(t, nil, resolve)
+
+	if err := push(t, rsyncBin, port, src, "migration-aaa/"); err == nil {
+		t.Fatal("expected the first attempt to be refused")
+	}
+	if err := awaitOutcome(t, outcomes); err == nil {
+		t.Error("refusal was not reported")
+	}
+
+	ready.Store(true)
+
+	if err := push(t, rsyncBin, port, src, "migration-aaa/"); err != nil {
+		t.Fatalf("retry after the destination became ready: %v", err)
+	}
+	if err := awaitOutcome(t, outcomes); err != nil {
+		t.Errorf("retry reported an error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dst, "data", "marker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "payload" {
+		t.Errorf("marker = %q, want %q", got, "payload")
+	}
+}
+
+// TestModuleResolverServesOnlyApprovedConnections covers deciding at the
+// listener what a connection may have and looking that up by address when it
+// names a module, so the resolver cannot disagree with the gate that admitted it.
+func TestModuleResolverServesOnlyApprovedConnections(t *testing.T) {
+	t.Parallel()
+
+	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "vol")
+	writeTree(t, src, "payload")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const approvedModule = "migration-approved"
+
+	var mu sync.Mutex
+	approved := map[string]string{}
+	onAccept := func(remoteAddr string) {
+		mu.Lock()
+		defer mu.Unlock()
+		approved[remoteAddr] = approvedModule
+	}
+
+	resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+		mu.Lock()
+		want, ok := approved[remoteAddr]
+		mu.Unlock()
+		if !ok {
+			return rsyncd.Module{}, fmt.Errorf("connection %s was not approved", remoteAddr)
+		}
+		if requestedModule != want {
+			return rsyncd.Module{}, fmt.Errorf("connection %s is approved for %s, not %q", remoteAddr, want, requestedModule)
+		}
+		return rsyncd.Module{Name: requestedModule, Path: dst, Writable: true}, nil
+	}
+	port, outcomes := serveResolvedWithAccept(t, onAccept, resolve)
+
+	if err := push(t, rsyncBin, port, src, approvedModule+"/"); err != nil {
+		t.Fatalf("approved module: %v", err)
+	}
+	if err := awaitOutcome(t, outcomes); err != nil {
+		t.Errorf("approved transfer reported an error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "data", "marker")); err != nil {
+		t.Fatalf("approved transfer did not land: %v", err)
+	}
+
+	// Same gate, different name: admitted at the listener but refused at resolve.
+	if err := push(t, rsyncBin, port, src, "migration-other/"); err == nil {
+		t.Fatal("expected a module the connection was not approved for to be refused")
+	}
+	if err := awaitOutcome(t, outcomes); err == nil {
+		t.Error("refusal was not reported")
+	}
+	if _, err := os.Stat(filepath.Join(dst, "migration-other")); !os.IsNotExist(err) {
+		t.Errorf("refused connection wrote into the approved root: %v", err)
 	}
 }
 
