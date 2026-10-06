@@ -43,13 +43,19 @@ func TestModuleResolverServesOneConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Called once per connection to decide what that client may write to. This
-	// one always answers with dest; a real caller would look the path up from
-	// the name the client asked for.
+	// Called once per connection, with the name the client asked for. That name
+	// is the input: it decides which directory the client gets, and an error
+	// refuses the connection. A real caller would look it up live rather than
+	// from a fixed map.
+	directories := map[string]string{"volume-a": dest}
 	resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+		path, ok := directories[requestedModule]
+		if !ok {
+			return rsyncd.Module{}, fmt.Errorf("unknown module %q", requestedModule)
+		}
 		return rsyncd.Module{
 			Name:     requestedModule, // must match what was asked for
-			Path:     dest,
+			Path:     path,
 			Writable: true,
 		}, nil
 	}
@@ -77,13 +83,12 @@ func TestModuleResolverServesOneConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// rsync --archive source/ rsync://localhost/any-name/
-	// The resolver accepts any name, so "any-name" is arbitrary here.
+	// "volume-a" is the module name; it is what reaches the resolver.
 	rsync := exec.Command(rsyncBin,
 		"--archive",
 		"--port="+port,
 		filepath.Base(source)+"/",
-		"rsync://localhost/any-name/")
+		"rsync://localhost/volume-a/")
 	rsync.Dir = tmp
 	rsync.Stdout = testlogger.New(t)
 	rsync.Stderr = testlogger.New(t)
