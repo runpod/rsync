@@ -79,7 +79,12 @@ type ModuleResolver func(remoteAddr, requestedModule string) (Module, error)
 // one up in the static list, so the served path can depend on who is calling.
 //
 // Because the paths are not known until a client connects, restrictToModules
-// cannot be applied and DontRestrict is required.
+// cannot be applied and DontRestrict is required. NewServer must be given a nil
+// module list: the resolver answers for every module, so a static list would
+// never be consulted.
+//
+// A module listing request ("#list") reports nothing, as there is no set of
+// modules to enumerate before a client names one.
 func WithModuleResolver(resolve ModuleResolver) Option {
 	return serverOptionFunc(func(s *Server) {
 		s.resolveModule = resolve
@@ -118,6 +123,10 @@ func NewServer(modules []Module, opts ...Option) (*Server, error) {
 	// by the caller of NewServer().
 	if server.resolveModule != nil && !server.dontRestrict {
 		return nil, errors.New("WithModuleResolver requires DontRestrict: the paths to restrict to are not known until a client connects")
+	}
+
+	if server.resolveModule != nil && len(modules) > 0 {
+		return nil, errors.New("WithModuleResolver cannot be combined with a static module list: the resolver answers for every module, so the list would never be consulted")
 	}
 
 	if !server.dontRestrict && len(server.modules) > 0 {
