@@ -22,6 +22,84 @@ import (
 // connects, which lets a caller route each connection to a different directory
 // without knowing the set of directories at startup.
 
+// TestModuleResolverServesOneConnection is WithModuleResolver end to end with
+// one server, one client, and one directory. It shares no helpers with the
+// tests below so it can be read top to bottom.
+func TestModuleResolverServesOneConnection(t *testing.T) {
+	t.Parallel()
+
+	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
+
+	// A directory to send, and an empty one to receive it.
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "source")
+	dest := filepath.Join(tmp, "dest")
+	for _, dir := range []string{source, dest} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "hello"), []byte("world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Called once per connection to decide what that client may write to. This
+	// one always answers with dest; a real caller would look the path up from
+	// the name the client asked for.
+	resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+		return rsyncd.Module{
+			Name:     requestedModule, // must match what was asked for
+			Path:     dest,
+			Writable: true,
+		}, nil
+	}
+
+	// nil module list: the resolver supplies the module instead of a static one.
+	// DontRestrict is required because the paths are unknown until a client connects.
+	srv, err := rsyncd.NewServer(nil,
+		rsyncd.WithModuleResolver(resolve),
+		rsyncd.DontRestrict(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// rsync --archive source/ rsync://localhost/any-name/
+	// The resolver accepts any name, so "any-name" is arbitrary here.
+	rsync := exec.Command(rsyncBin,
+		"--archive",
+		"--port="+port,
+		filepath.Base(source)+"/",
+		"rsync://localhost/any-name/")
+	rsync.Dir = tmp
+	rsync.Stdout = testlogger.New(t)
+	rsync.Stderr = testlogger.New(t)
+	if err := rsync.Run(); err != nil {
+		t.Fatalf("rsync: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dest, "hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "world" {
+		t.Errorf("hello = %q, want %q", got, "world")
+	}
+}
+
 // migrationRegistry stands in for a caller that maps an identifier supplied by
 // the client to a directory, and pins each identifier to an expected peer.
 type migrationRegistry struct {
