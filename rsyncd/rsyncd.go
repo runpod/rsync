@@ -73,7 +73,11 @@ func DontRestrict() Option {
 //
 // remoteAddr is whatever the caller passed to NewConnection — the peer address
 // from Serve, but a placeholder like "<remote-shell-daemon>" for stdio.
-type ModuleResolver func(remoteAddr, requestedModule string) (Module, error)
+//
+// ctx is the one given to HandleDaemonConn, so a caller running its own accept
+// loop can carry per-connection values through to the resolver. It is not yet
+// cancelled when the connection drops, only when the caller cancels it.
+type ModuleResolver func(ctx context.Context, remoteAddr, requestedModule string) (Module, error)
 
 // WithModuleResolver serves a module computed per connection instead of looking
 // one up in the static list, so the served path can depend on who is calling.
@@ -117,10 +121,6 @@ func NewServer(modules []Module, opts ...Option) (*Server, error) {
 		server.logger = log.New(server.stderr)
 	}
 
-	// An empty module list means this server is a sender
-	// (e.g. started in command mode with --server --sender),
-	// in which case restrict.MaybeFileSystem() will be called
-	// by the caller of NewServer().
 	if server.resolveModule != nil && !server.dontRestrict {
 		return nil, errors.New("WithModuleResolver requires DontRestrict: the paths to restrict to are not known until a client connects")
 	}
@@ -129,6 +129,10 @@ func NewServer(modules []Module, opts ...Option) (*Server, error) {
 		return nil, errors.New("WithModuleResolver cannot be combined with a static module list: the resolver answers for every module, so the list would never be consulted")
 	}
 
+	// An empty module list means this server is a sender
+	// (e.g. started in command mode with --server --sender),
+	// in which case restrict.MaybeFileSystem() will be called
+	// by the caller of NewServer().
 	if !server.dontRestrict && len(server.modules) > 0 {
 		if err := restrictToModules(server.modules); err != nil {
 			return nil, err
@@ -147,9 +151,9 @@ type Server struct {
 	resolveModule ModuleResolver
 }
 
-func (s *Server) getModule(remoteAddr, requestedModule string) (Module, error) {
+func (s *Server) getModule(ctx context.Context, remoteAddr, requestedModule string) (Module, error) {
 	if s.resolveModule != nil {
-		mod, err := s.resolveModule(remoteAddr, requestedModule)
+		mod, err := s.resolveModule(ctx, remoteAddr, requestedModule)
 		if err != nil {
 			return Module{}, err
 		}
@@ -234,10 +238,10 @@ func checkACL(acls []string, remoteAddr string) error {
 	return nil
 }
 
-// FIXME: context cancellation not yet implemented
+// FIXME: context cancellation not yet implemented. ctx reaches the module
+// resolver, but not the transfer itself. what would be the best thing to do?
+// wrap conn's reader part with cancelable reader?
 func (s *Server) HandleDaemonConn(ctx context.Context, conn *Conn) (err error) {
-	_ = ctx // not implemented. what would be the best thing to do? wrap conn's reader part with cancelable reader?
-
 	const terminationCommand = "@RSYNCD: OK\n"
 	cwr := conn.cwr
 	rd := conn.rd
@@ -268,7 +272,7 @@ func (s *Server) HandleDaemonConn(ctx context.Context, conn *Conn) (err error) {
 		return nil
 	}
 	s.logger.Printf("client %v requested rsync module %q", conn.name, requestedModule)
-	module, err := s.getModule(conn.name, requestedModule)
+	module, err := s.getModule(ctx, conn.name, requestedModule)
 	if err != nil {
 		fmt.Fprintf(cwr, "@ERROR: Unknown module %q\n", requestedModule)
 		return err

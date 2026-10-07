@@ -44,7 +44,7 @@ func ExampleWithModuleResolver() {
 		"photos": "/home/bob/Photos",
 	}
 
-	resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+	resolve := func(_ context.Context, remoteAddr, requestedModule string) (rsyncd.Module, error) {
 		path, ok := roots[requestedModule]
 		if !ok {
 			return rsyncd.Module{}, fmt.Errorf("unknown module %q", requestedModule)
@@ -78,7 +78,7 @@ func ExampleWithModuleResolver() {
 func TestNewServerModuleResolverRequiresDontRestrict(t *testing.T) {
 	t.Parallel()
 
-	resolve := func(string, string) (rsyncd.Module, error) { return rsyncd.Module{}, nil }
+	resolve := func(context.Context, string, string) (rsyncd.Module, error) { return rsyncd.Module{}, nil }
 
 	if _, err := rsyncd.NewServer(nil, rsyncd.WithModuleResolver(resolve)); err == nil {
 		t.Fatal("NewServer accepted a resolver without DontRestrict")
@@ -87,7 +87,7 @@ func TestNewServerModuleResolverRequiresDontRestrict(t *testing.T) {
 	}
 
 	if _, err := rsyncd.NewServer(nil, rsyncd.WithModuleResolver(resolve), rsyncd.DontRestrict()); err != nil {
-		t.Errorf("NewServer with DontRestrict: %v", err)
+		t.Errorf("NewServer rejected a resolver with DontRestrict: %v", err)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestNewServerModuleResolverRequiresDontRestrict(t *testing.T) {
 func TestNewServerModuleResolverRejectsStaticModules(t *testing.T) {
 	t.Parallel()
 
-	resolve := func(string, string) (rsyncd.Module, error) { return rsyncd.Module{}, nil }
+	resolve := func(context.Context, string, string) (rsyncd.Module, error) { return rsyncd.Module{}, nil }
 	modules := []rsyncd.Module{{Name: "music", Path: "/home/bob/Music"}}
 
 	_, err := rsyncd.NewServer(modules, rsyncd.WithModuleResolver(resolve), rsyncd.DontRestrict())

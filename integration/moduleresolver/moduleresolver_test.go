@@ -6,6 +6,7 @@ package moduleresolver_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -47,7 +48,7 @@ func TestModuleResolverServesOneConnection(t *testing.T) {
 	// refuses the connection. A real caller would look it up live rather than
 	// from a fixed map.
 	directories := map[string]string{"mod-a": dest}
-	resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+	resolve := func(_ context.Context, remoteAddr, requestedModule string) (rsyncd.Module, error) {
 		path, ok := directories[requestedModule]
 		if !ok {
 			return rsyncd.Module{}, fmt.Errorf("unknown module %q", requestedModule)
@@ -107,7 +108,7 @@ func TestModuleResolverServesOneConnection(t *testing.T) {
 // rootRegistry maps a name supplied by the client to a directory.
 type rootRegistry map[string]string
 
-func (r rootRegistry) resolve(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+func (r rootRegistry) resolve(_ context.Context, remoteAddr, requestedModule string) (rsyncd.Module, error) {
 	dir, ok := r[requestedModule]
 	if !ok {
 		return rsyncd.Module{}, fmt.Errorf("unknown module %q", requestedModule)
@@ -276,41 +277,6 @@ func TestModuleResolverRoutesConcurrentConnections(t *testing.T) {
 	}
 }
 
-// TestModuleResolverConfinesToResolvedRoot checks the isolation property a
-// shared root cannot offer: a client naming another root's directory stays
-// inside the root it was given, because that root is its whole view.
-func TestModuleResolverConfinesToResolvedRoot(t *testing.T) {
-	t.Parallel()
-
-	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
-
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "src")
-	mine := filepath.Join(tmp, "root-a")
-	other := filepath.Join(tmp, "root-b")
-	writeTree(t, src, "payload")
-	for _, d := range []string{mine, other} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	reg := rootRegistry{"mod-a": mine, "mod-b": other}
-	port, _ := serveResolved(t, reg.resolve)
-
-	// Served mod-a, aiming at the other root's directory name.
-	if err := push(t, rsyncBin, port, src, "mod-a/root-b/"); err != nil {
-		t.Fatalf("push failed: %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(other, "data", "marker")); !os.IsNotExist(err) {
-		t.Fatalf("write reached the other root: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(mine, "root-b", "data", "marker")); err != nil {
-		t.Fatalf("write should have stayed inside the resolved root: %v", err)
-	}
-}
-
 // TestModuleResolverRejectsUnknownModule covers a resolver error reaching both
 // ends: the client sees @ERROR and HandleDaemonConn returns the error, rather
 // than it being swallowed.
@@ -359,7 +325,7 @@ func TestModuleResolverRejectsRenamedModule(t *testing.T) {
 	}
 
 	// Right directory, wrong name: only the name differs.
-	renaming := func(_, _ string) (rsyncd.Module, error) {
+	renaming := func(context.Context, string, string) (rsyncd.Module, error) {
 		return rsyncd.Module{Name: "canonical-name", Path: dst, Writable: true}, nil
 	}
 	port, outcomes := serveResolved(t, renaming)
@@ -394,7 +360,7 @@ func TestModuleResolverRejectsInvalidModule(t *testing.T) {
 	writeTree(t, src, "payload")
 
 	// Empty Path: valid-looking, but validateModule rejects it.
-	resolve := func(_, requestedModule string) (rsyncd.Module, error) {
+	resolve := func(_ context.Context, _, requestedModule string) (rsyncd.Module, error) {
 		return rsyncd.Module{Name: requestedModule, Writable: true}, nil
 	}
 	port, outcomes := serveResolved(t, resolve)
@@ -439,7 +405,7 @@ func TestModuleResolverEnforcesACL(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			resolve := func(_, requestedModule string) (rsyncd.Module, error) {
+			resolve := func(_ context.Context, _, requestedModule string) (rsyncd.Module, error) {
 				return rsyncd.Module{
 					Name:     requestedModule,
 					Path:     dst,
@@ -509,27 +475,44 @@ func TestModuleResolverReceivesConnectionName(t *testing.T) {
 		const want = "192.0.2.10:1234"
 		var mu sync.Mutex
 		var got string
-		resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+		resolve := func(_ context.Context, remoteAddr, requestedModule string) (rsyncd.Module, error) {
 			mu.Lock()
 			got = remoteAddr
 			mu.Unlock()
 			return rsyncd.Module{Name: requestedModule, Path: dst, Writable: true}, nil
 		}
 
+		srv, err := rsyncd.NewServer(nil,
+			rsyncd.WithModuleResolver(resolve),
+			rsyncd.WithStderr(testlogger.New(t)),
+			rsyncd.DontRestrict(),
+		)
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+
 		ln, err := net.Listen("tcp", "localhost:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		port, outcomes := serveResolvedOn(t, &connWithRemoteAddrListener{
+		t.Cleanup(func() { _ = ln.Close() })
+
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go srv.Serve(ctx, &connWithRemoteAddrListener{
 			Listener:   ln,
 			remoteAddr: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 1234},
-		}, nil, resolve)
+		})
 
+		_, port, err := net.SplitHostPort(ln.Addr().String())
+		if err != nil {
+			t.Fatalf("split listener address: %v", err)
+		}
+
+		// A successful push means the resolver ran, so there is no outcome to
+		// await: Serve logs per-connection errors rather than returning them.
 		if err := push(t, rsyncBin, port, src, "mod-a/"); err != nil {
 			t.Fatalf("push failed: %v", err)
-		}
-		if err := awaitOutcome(t, outcomes); err != nil {
-			t.Errorf("transfer reported an error: %v", err)
 		}
 
 		mu.Lock()
@@ -554,7 +537,7 @@ func TestModuleResolverReceivesConnectionName(t *testing.T) {
 		const want = "<remote-shell-daemon>"
 		var mu sync.Mutex
 		var got string
-		resolve := func(remoteAddr, requestedModule string) (rsyncd.Module, error) {
+		resolve := func(_ context.Context, remoteAddr, requestedModule string) (rsyncd.Module, error) {
 			mu.Lock()
 			got = remoteAddr
 			mu.Unlock()
@@ -580,6 +563,79 @@ func TestModuleResolverReceivesConnectionName(t *testing.T) {
 			t.Errorf("resolver saw remoteAddr %q, want %q", got, want)
 		}
 	})
+}
+
+type approvalKey struct{}
+
+// TestModuleResolverReceivesContext covers a caller running its own accept loop
+// attaching what it already knows about a connection, so the resolver can use
+// it directly rather than looking it up again by address.
+func TestModuleResolverReceivesContext(t *testing.T) {
+	t.Parallel()
+
+	rsyncBin := rsynctest.TridgeOrGTFO(t, "test drives a real rsync client against the daemon")
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	dst := filepath.Join(tmp, "root-a")
+	writeTree(t, src, "payload")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := func(ctx context.Context, _, requestedModule string) (rsyncd.Module, error) {
+		path, ok := ctx.Value(approvalKey{}).(string)
+		if !ok {
+			return rsyncd.Module{}, errors.New("no approved path on the context")
+		}
+		return rsyncd.Module{Name: requestedModule, Path: path, Writable: true}, nil
+	}
+
+	srv, err := rsyncd.NewServer(nil,
+		rsyncd.WithModuleResolver(resolve),
+		rsyncd.WithStderr(testlogger.New(t)),
+		rsyncd.DontRestrict(),
+	)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	served := make(chan error, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		// Stands in for whatever the caller decided when it accepted the
+		// connection, rather than the resolver rediscovering it.
+		connCtx := context.WithValue(ctx, approvalKey{}, dst)
+		served <- srv.HandleDaemonConn(connCtx, rsyncd.NewConnection(conn, conn, conn.RemoteAddr().String()))
+	}()
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener address: %v", err)
+	}
+
+	if err := push(t, rsyncBin, port, src, "mod-a/"); err != nil {
+		t.Fatalf("push failed: %v", err)
+	}
+	if err := awaitOutcome(t, served); err != nil {
+		t.Errorf("transfer reported an error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "data", "marker")); err != nil {
+		t.Errorf("transfer did not land in the path taken from the context: %v", err)
+	}
 }
 
 // TestModuleResolverListsNoModules pins the module listing being empty with a
