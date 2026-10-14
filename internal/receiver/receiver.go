@@ -33,6 +33,7 @@ func (rt *Transfer) RecvFiles(fileList []*File) error {
 			}
 			break
 		}
+		rt.Received++
 		if rt.Opts.DebugGTE(rsyncopts.DEBUG_RECV, 1) {
 			rt.Logger.Printf("receiving file idx=%d: %+v", idx, fileList[idx])
 		}

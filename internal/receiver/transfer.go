@@ -46,12 +46,26 @@ type Transfer struct {
 	Progress progress.Printer
 
 	// state
-	Conn            *rsyncwire.Conn
-	Seed            int32
-	IOErrors        int32
+	Conn     *rsyncwire.Conn
+	Seed     int32
+	IOErrors int32
+	// A sender that cannot read a file skips it, and before protocol 30 says
+	// nothing about having done so, so the gap between these is the only sign.
+	// Written by GenerateFiles and RecvFiles, so read only once both finish.
+	Requested       int32
+	Received        int32
 	Users           map[int32]mapping
 	Groups          map[int32]mapping
 	retouchDirPerms bool
+}
+
+// MissingFiles reports how many files the sender was asked for but never sent.
+// Only meaningful once the transfer has finished.
+func (rt *Transfer) MissingFiles() int32 {
+	if rt.Received >= rt.Requested {
+		return 0
+	}
+	return rt.Requested - rt.Received
 }
 
 func (rt *Transfer) listOnly() bool { return rt.Dest == "" }

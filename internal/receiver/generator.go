@@ -139,6 +139,13 @@ func (rt *Transfer) setPerms(f *File, mode fs.FileMode) error {
 	return nil
 }
 
+// requestFile asks the sender for a file and counts the ask. The sender answers
+// every request with the same index, so an unanswered one was dropped.
+func (rt *Transfer) requestFile(idx int) error {
+	rt.Requested++
+	return rt.Conn.WriteInt32(int32(idx))
+}
+
 // rsync/generator.c:recv_generator
 func (rt *Transfer) recvGenerator(idx int, f *File) error {
 	if rt.listOnly() {
@@ -249,7 +256,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 		if rt.Opts.DebugGTE(rsyncopts.DEBUG_GENR, 1) {
 			rt.Logger.Printf("requesting: %s", f.Name)
 		}
-		if err := rt.Conn.WriteInt32(int32(idx)); err != nil {
+		if err := rt.requestFile(idx); err != nil {
 			return err
 		}
 		if rt.Opts.DryRun {
@@ -268,7 +275,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 			if pin, psize, ok := rt.openPartialBasis(f); ok {
 				defer pin.Close()
 				rt.Logger.Printf("resuming %s from partial (%d bytes)", f.Name, psize)
-				if err := rt.Conn.WriteInt32(int32(idx)); err != nil {
+				if err := rt.requestFile(idx); err != nil {
 					return err
 				}
 				return rt.generateAndSendSums(pin, psize)
@@ -306,7 +313,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 	}
 
 	if rt.Opts.DryRun {
-		if err := rt.Conn.WriteInt32(int32(idx)); err != nil {
+		if err := rt.requestFile(idx); err != nil {
 			return err
 		}
 
@@ -325,7 +332,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 	if rt.Opts.DebugGTE(rsyncopts.DEBUG_GENR, 1) {
 		rt.Logger.Printf("sending sums for: %s", f.Name)
 	}
-	if err := rt.Conn.WriteInt32(int32(idx)); err != nil {
+	if err := rt.requestFile(idx); err != nil {
 		return err
 	}
 
