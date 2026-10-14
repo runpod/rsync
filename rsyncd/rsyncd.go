@@ -238,6 +238,11 @@ func checkACL(acls []string, remoteAddr string) error {
 	return nil
 }
 
+// ErrSenderIOErrors reports that the sender could not read some of what it was
+// asked to send, which it exits 23 for. The session still ends cleanly here, so
+// without this a caller cannot tell a whole tree from one missing files.
+var ErrSenderIOErrors = errors.New("sender reported I/O errors: transfer is incomplete")
+
 // FIXME: context cancellation not yet implemented. ctx reaches the module
 // resolver, but not the transfer itself. what would be the best thing to do?
 // wrap conn's reader part with cancelable reader?
@@ -601,6 +606,15 @@ func (s *Server) handleConnReceiver(module *Module, crd *rsyncwire.CountingReade
 	}
 	if opts.InfoGTE(rsyncopts.INFO_STATS, 1) {
 		s.logger.Printf("stats: %+v", stats)
+	}
+
+	// Two signals because neither covers the other: IOErrors is what the sender
+	// hit building the file list, while a file it could stat but not open is
+	// just never sent. After Do, so the goodbye is already out and the client
+	// still exits 23 on its own.
+	if missing := rt.MissingFiles(); rt.IOErrors > 0 || missing > 0 {
+		return fmt.Errorf("%w (%d reported by sender, %d requested but never sent)",
+			ErrSenderIOErrors, rt.IOErrors, missing)
 	}
 	return nil
 }
