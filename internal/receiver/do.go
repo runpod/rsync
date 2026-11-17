@@ -1,8 +1,10 @@
 package receiver
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"github.com/runpod/rsync/internal/rsyncopts"
@@ -66,6 +68,19 @@ func (rt *Transfer) deleteFiles(fileList []*File) error {
 	return nil
 }
 
+// recovered runs f, turning a panic into an error. errgroup does not carry a
+// panic back to Wait, and these goroutines are not the caller's, so without
+// this a panic while handling one transfer takes down the whole process a
+// server is embedded in.
+func recovered(name string, f func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic in %s: %v\n%s", name, p, debug.Stack())
+		}
+	}()
+	return f()
+}
+
 // rsync/main.c:do_recv
 func (rt *Transfer) Do(c *rsyncwire.Conn, fileList []*File, noReport bool) (*rsyncstats.TransferStats, error) {
 	if rt.Opts.DeleteMode {
@@ -88,8 +103,10 @@ func (rt *Transfer) Do(c *rsyncwire.Conn, fileList []*File, noReport bool) (*rsy
 		}
 		return err
 	}
-	eg.Go(func() error { return closeOnErr(rt.GenerateFiles(fileList)) })
-	eg.Go(func() error { return closeOnErr(rt.RecvFiles(fileList)) })
+	eg.Go(func() error {
+		return closeOnErr(recovered("generator", func() error { return rt.GenerateFiles(fileList) }))
+	})
+	eg.Go(func() error { return closeOnErr(recovered("receiver", func() error { return rt.RecvFiles(fileList) })) })
 	if err := eg.Wait(); err != nil {
 		return nil, err
 	}
