@@ -33,6 +33,9 @@ func (rt *Transfer) RecvFiles(fileList []*File) error {
 			}
 			break
 		}
+		if idx < 0 || int(idx) >= len(fileList) {
+			return fmt.Errorf("sender answered for file index %d, outside the %d-entry file list", idx, len(fileList))
+		}
 		rt.Received++
 		if rt.Opts.DebugGTE(rsyncopts.DEBUG_RECV, 1) {
 			rt.Logger.Printf("receiving file idx=%d: %+v", idx, fileList[idx])
