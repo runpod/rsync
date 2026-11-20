@@ -1,3 +1,5 @@
+//go:build !windows
+
 package receiver
 
 import (
@@ -14,6 +16,7 @@ import (
 
 // The tree's owner can remove or replace a directory after the generator made
 // it. The touch-up at the end must skip that one and still finish the rest.
+// Not on Windows, where a directory has no permission bits to check.
 func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
 	then := time.Unix(1_000_000_000, 0)
 	tests := []struct {
