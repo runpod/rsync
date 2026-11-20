@@ -181,11 +181,15 @@ func TestWholeFile(t *testing.T) {
 func TestWholeFileWinsOverAPartialResume(t *testing.T) {
 	tmp := t.TempDir()
 	src, dest := filepath.Join(tmp, "src"), filepath.Join(tmp, "dest")
-	write(t, filepath.Join(src, "f"), "the whole of the new contents")
-	write(t, filepath.Join(dest, "f.partial"), "the whole of the")
+	// The partial is a multi-block prefix of the source, so a generator that
+	// sent sums from it would get blocks matched, and the receiver, which opens
+	// no basis under --whole-file, would then fail the transfer.
+	content := strings.Repeat("0123456789abcdef", 512) // 8 KiB
+	write(t, filepath.Join(src, "f"), content)
+	write(t, filepath.Join(dest, "f.partial"), content[:4096])
 
 	push(t, src, dest, "--partial", "--whole-file")
-	requireContent(t, filepath.Join(dest, "f"), "the whole of the new contents")
+	requireContent(t, filepath.Join(dest, "f"), content)
 	if _, err := os.Lstat(filepath.Join(dest, "f.partial")); !os.IsNotExist(err) {
 		t.Errorf("f.partial is still there: %v", err)
 	}

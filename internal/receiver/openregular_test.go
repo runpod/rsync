@@ -107,8 +107,8 @@ func TestOpenRegular(t *testing.T) {
 					t.Fatalf("read %q, %v; want the file's contents", b, err)
 				}
 			case wantNone:
-				if got.f != nil {
-					t.Fatalf("opened %s, want no file", got.f.Name())
+				if got.f != nil || got.err != nil {
+					t.Fatalf("openRegular = %v, %v; want no file and no error", got.f, got.err)
 				}
 			case wantNoFile:
 				if got.f != nil {

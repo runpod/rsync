@@ -74,10 +74,14 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 		// go onto whatever took its name: skip it, as rsync's touch_up_dirs
 		// does, and carry on with the rest.
 		if st, err := rt.DestRoot.Lstat(f.Name); err != nil || !st.IsDir() {
+			if err == nil {
+				err = fmt.Errorf("it is %v", st.Mode().Type())
+			}
 			rt.Logger.Printf("touchUpDirs: skipping %s, no longer a directory: %v", f.Name, err)
 			continue
 		}
-		if err := rt.setPerms(f, mode); err != nil {
+		// Removed between that check and this call is the same case.
+		if err := rt.setPerms(f, mode); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
