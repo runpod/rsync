@@ -18,6 +18,7 @@ func TestOpenRegular(t *testing.T) {
 		wantNone              // no handle: not a regular file
 		wantNotExist          // an error
 		wantFileOrNone        // os.Root follows an in-root symlink on some platforms
+		wantNoFile            // no handle, with or without an error
 	)
 	tests := []struct {
 		name string
@@ -54,6 +55,11 @@ func TestOpenRegular(t *testing.T) {
 				must(t, os.Symlink("fifo", filepath.Join(dir, "f")))
 			},
 			want: wantNone,
+		},
+		{
+			name: "symlink to a device outside the root is not opened",
+			make: func(t *testing.T, dir string) { must(t, os.Symlink("/dev/null", filepath.Join(dir, "f"))) },
+			want: wantNoFile,
 		},
 		{
 			name: "missing name is an error",
@@ -101,6 +107,10 @@ func TestOpenRegular(t *testing.T) {
 					t.Fatalf("read %q, %v; want the file's contents", b, err)
 				}
 			case wantNone:
+				if got.f != nil {
+					t.Fatalf("opened %s, want no file", got.f.Name())
+				}
+			case wantNoFile:
 				if got.f != nil {
 					t.Fatalf("opened %s, want no file", got.f.Name())
 				}

@@ -3,6 +3,7 @@
 package receiver
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"strconv"
@@ -36,7 +37,9 @@ func openRegular(root *os.Root, name string) (*os.File, fs.FileInfo, error) {
 	}
 	f, err := os.OpenFile("/proc/self/fd/"+strconv.Itoa(int(p.Fd())), os.O_RDONLY, 0)
 	if err != nil {
-		return nil, nil, err
+		// %v, not %w: without /proc this is ENOENT, which must not read to a
+		// caller as the name itself being absent.
+		return nil, nil, fmt.Errorf("reopen %s through /proc: %v", name, err)
 	}
 	return f, st, nil
 }

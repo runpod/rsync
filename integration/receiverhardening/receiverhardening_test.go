@@ -58,14 +58,18 @@ func push(t *testing.T, src, dest string, extraArgs ...string) {
 
 	args := append([]string{"-a"}, extraArgs...)
 	args = append(args, src+"/", "rsync://"+ln.Addr().String()+"/vol/")
-	out, clientErr := exec.Command(rsyncBin, args...).CombinedOutput()
+	// A deadline on the client too: a hang is the very failure these tests
+	// guard against, and it should fail here, not at go test's own timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, clientErr := exec.CommandContext(ctx, rsyncBin, args...).CombinedOutput()
 	select {
 	case daemonErr := <-served:
 		if clientErr != nil || daemonErr != nil {
 			t.Fatalf("rsync %v: client: %v, daemon: %v\n%s", args, clientErr, daemonErr, out)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("daemon never finished the connection")
+		t.Fatalf("daemon never finished the connection; client: %v\n%s", clientErr, out)
 	}
 }
 
@@ -137,7 +141,7 @@ func TestDirectoryTimesSurviveTheirContents(t *testing.T) {
 	}
 
 	push(t, src, dest)
-	for _, dir := range []string{"d/sub", "d"} {
+	for _, dir := range []string{"d/sub", "d", "."} {
 		st, err := os.Stat(filepath.Join(dest, dir))
 		if err != nil {
 			t.Fatal(err)
@@ -172,6 +176,21 @@ func TestWholeFile(t *testing.T) {
 	}
 }
 
+// --whole-file means no delta basis, a retained partial included: the file
+// arrives whole and the partial does not outlive it.
+func TestWholeFileWinsOverAPartialResume(t *testing.T) {
+	tmp := t.TempDir()
+	src, dest := filepath.Join(tmp, "src"), filepath.Join(tmp, "dest")
+	write(t, filepath.Join(src, "f"), "the whole of the new contents")
+	write(t, filepath.Join(dest, "f.partial"), "the whole of the")
+
+	push(t, src, dest, "--partial", "--whole-file")
+	requireContent(t, filepath.Join(dest, "f"), "the whole of the new contents")
+	if _, err := os.Lstat(filepath.Join(dest, "f.partial")); !os.IsNotExist(err) {
+		t.Errorf("f.partial is still there: %v", err)
+	}
+}
+
 // -a is --devices and --specials together. A client that turns devices off
 // must still get its FIFOs across.
 func TestSpecialsWithoutDevices(t *testing.T) {
@@ -203,31 +222,39 @@ func TestLongFileNamesWithPartial(t *testing.T) {
 	requireContent(t, filepath.Join(dest, long), "payload")
 }
 
-// What is at a file's name in the destination is the tree owner's choice. The
-// transfer must replace it without opening it: opening a FIFO blocks for good.
-func TestNonRegularEntriesAtAFilesNameAreReplaced(t *testing.T) {
+// What is at a file's name in the destination, or at the name of the temporary
+// --partial writes to, is the tree owner's choice. The transfer must replace it
+// without opening it: opening a FIFO blocks for good.
+func TestNonRegularEntriesAreReplacedNotOpened(t *testing.T) {
+	fifo := func(t *testing.T, path string) {
+		if err := syscall.Mkfifo(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	symlinkToFIFO := func(t *testing.T, path string) {
+		fifo(t, path+".fifo")
+		if err := os.Symlink(filepath.Base(path)+".fifo", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dangling := func(t *testing.T, path string) {
+		if err := os.Symlink("nowhere", path); err != nil {
+			t.Fatal(err)
+		}
+	}
 	tests := []struct {
-		name  string
+		name string
+		// at is the name planted, beside the file "f" the source sends.
+		at    string
 		plant func(t *testing.T, path string)
+		args  []string
 	}{
-		{name: "FIFO", plant: func(t *testing.T, path string) {
-			if err := syscall.Mkfifo(path, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "symlink to a FIFO", plant: func(t *testing.T, path string) {
-			if err := syscall.Mkfifo(path+".fifo", 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(filepath.Base(path)+".fifo", path); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "dangling symlink", plant: func(t *testing.T, path string) {
-			if err := os.Symlink("nowhere", path); err != nil {
-				t.Fatal(err)
-			}
-		}},
+		{name: "FIFO at the file's name", at: "f", plant: fifo},
+		{name: "symlink to a FIFO at the file's name", at: "f", plant: symlinkToFIFO},
+		{name: "dangling symlink at the file's name", at: "f", plant: dangling},
+		{name: "FIFO at the partial temporary's name", at: "f.partial.tmp", plant: fifo, args: []string{"--partial"}},
+		{name: "symlink to a FIFO at the partial temporary's name", at: "f.partial.tmp", plant: symlinkToFIFO, args: []string{"--partial"}},
+		{name: "FIFO at the partial's name", at: "f.partial", plant: fifo, args: []string{"--partial"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -237,9 +264,9 @@ func TestNonRegularEntriesAtAFilesNameAreReplaced(t *testing.T) {
 			if err := os.Mkdir(dest, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			tt.plant(t, filepath.Join(dest, "f"))
+			tt.plant(t, filepath.Join(dest, tt.at))
 
-			push(t, src, dest)
+			push(t, src, dest, tt.args...)
 			st, err := os.Lstat(filepath.Join(dest, "f"))
 			if err != nil || !st.Mode().IsRegular() {
 				t.Fatalf("f = %v, %v; want a regular file", st, err)

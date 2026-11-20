@@ -136,7 +136,14 @@ func (rt *Transfer) receiveData(f *File, localFile *os.File) error {
 	if rt.Opts.KeepPartial && len(filepath.Base(f.Name))+len(partialTmpSuffix) <= 255 {
 		tmpName := f.Name + partialTmpSuffix
 		partialName := f.Name + partialSuffix
-		tmp, err := rt.DestRoot.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		// Never open what is already at the name: a FIFO would block the open
+		// and a device would take the data. The temp is rewritten from byte 0
+		// each attempt, so removing it loses nothing, and O_EXCL fails closed
+		// if something is put back in between.
+		if err := rt.DestRoot.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		tmp, err := rt.DestRoot.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}

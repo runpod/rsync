@@ -1,0 +1,91 @@
+package receiver
+
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/runpod/rsync"
+	"github.com/runpod/rsync/internal/log"
+	"github.com/runpod/rsync/internal/rsyncopts"
+)
+
+// The tree's owner can remove or replace a directory after the generator made
+// it. The touch-up at the end must skip that one and still finish the rest.
+func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
+	then := time.Unix(1_000_000_000, 0)
+	tests := []struct {
+		name string
+		// change is what happens to directory "b" before the touch-up.
+		change func(t *testing.T, dest string)
+	}{
+		{name: "nothing changed", change: func(*testing.T, string) {}},
+		{name: "directory was removed", change: func(t *testing.T, dest string) {
+			if err := os.Remove(filepath.Join(dest, "b")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "directory was replaced by a file", change: func(t *testing.T, dest string) {
+			if err := os.Remove(filepath.Join(dest, "b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dest, "b"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "directory was replaced by a symlink to a file", change: func(t *testing.T, dest string) {
+			if err := os.Remove(filepath.Join(dest, "b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dest, "target"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("target", filepath.Join(dest, "b")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := t.TempDir()
+			var list []*File
+			for _, name := range []string{"a", "b", "c"} {
+				if err := os.Mkdir(filepath.Join(dest, name), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				list = append(list, &File{Name: name, Mode: rsync.S_IFDIR | 0o750, ModTime: then})
+			}
+			tt.change(t, dest)
+
+			rt := newTestTransfer(t, dest)
+			rt.Logger = log.New(io.Discard)
+			rt.Opts = &TransferOpts{
+				PreserveTimes: true,
+				DebugGTE:      func(rsyncopts.DebugLevel, uint16) bool { return false },
+			}
+			if err := rt.touchUpDirs(list); err != nil {
+				t.Fatalf("touchUpDirs: %v", err)
+			}
+
+			// The directories either side of the one that changed are done.
+			for _, name := range []string{"a", "c"} {
+				st, err := os.Stat(filepath.Join(dest, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !st.ModTime().Equal(then) || st.Mode().Perm() != 0o750 {
+					t.Errorf("%s: mtime %v mode %o, want %v and 750", name, st.ModTime(), st.Mode().Perm(), then)
+				}
+			}
+			// A directory's mode never lands on what replaced it.
+			if st, err := os.Stat(filepath.Join(dest, "target")); err == nil && st.Mode().Perm() != 0o600 {
+				t.Errorf("the symlink's target was chmodded to %o", st.Mode().Perm())
+			}
+			if st, err := os.Lstat(filepath.Join(dest, "b")); err == nil && st.Mode().IsRegular() && st.Mode().Perm() != 0o600 {
+				t.Errorf("the file that replaced b was chmodded to %o", st.Mode().Perm())
+			}
+		})
+	}
+}

@@ -69,6 +69,14 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 		if mode&syscall.S_IWUSR > 0 && !rt.Opts.PreserveTimes {
 			continue // directory is writeable, no touchup needed
 		}
+		// The tree's owner may have removed or replaced it since it was made.
+		// That is not this transfer failing, and a directory's mode must not
+		// go onto whatever took its name: skip it, as rsync's touch_up_dirs
+		// does, and carry on with the rest.
+		if st, err := rt.DestRoot.Lstat(f.Name); err != nil || !st.IsDir() {
+			rt.Logger.Printf("touchUpDirs: skipping %s, no longer a directory: %v", f.Name, err)
+			continue
+		}
 		if err := rt.setPerms(f, mode); err != nil {
 			return err
 		}
@@ -336,7 +344,10 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 	// What was a regular file at the Lstat above may be something else by now.
 	in, st, err := openRegular(rt.DestRoot, f.Name)
 	if err != nil || in == nil {
-		rt.Logger.Printf("failed to open %s as a regular file, continuing: %v", local, err)
+		if err == nil {
+			err = fmt.Errorf("it is %v, not a regular file", st.Mode().Type())
+		}
+		rt.Logger.Printf("not using %s as a delta basis, sending it whole: %v", local, err)
 		return requestFullFile()
 	}
 	defer in.Close()
