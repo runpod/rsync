@@ -83,7 +83,12 @@ func (rt *Transfer) skipFile(f *File, st os.FileInfo) (bool, error) {
 	}
 
 	if rt.Opts.AlwaysChecksum {
-		checksum, err := rsyncchecksum.RootChecksum(rt.DestRoot, f.Name)
+		in, _, err := openRegular(rt.DestRoot, f.Name)
+		if err != nil || in == nil {
+			return false, err
+		}
+		defer in.Close()
+		checksum, err := rsyncchecksum.ReaderChecksum(in)
 		if err != nil {
 			return false, err
 		}
@@ -235,10 +240,11 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 		return nil
 	}
 
-	if rt.Opts.PreserveDevices && (mode == rsync.S_IFCHR ||
-		mode == rsync.S_IFBLK ||
-		mode == rsync.S_IFSOCK ||
-		mode == rsync.S_IFIFO) {
+	// -D is --devices and --specials together, and a client can ask for
+	// either on its own.
+	isDev := mode == rsync.S_IFCHR || mode == rsync.S_IFBLK
+	isSpecial := mode == rsync.S_IFSOCK || mode == rsync.S_IFIFO
+	if (rt.Opts.PreserveDevices && isDev) || (rt.Opts.PreserveSpecials && isSpecial) {
 		if err := rt.createDevice(f, st); err != nil {
 			return err
 		}
@@ -274,7 +280,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 
 	if os.IsNotExist(err) {
 		// Final absent: resume from a retained partial if one exists.
-		if rt.Opts.KeepPartial {
+		if rt.Opts.KeepPartial && !rt.Opts.WholeFile {
 			if pin, psize, ok := rt.openPartialBasis(f); ok {
 				defer pin.Close()
 				rt.Logger.Printf("resuming %s from partial (%d bytes)", f.Name, psize)

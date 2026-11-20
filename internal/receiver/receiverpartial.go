@@ -1,6 +1,9 @@
 package receiver
 
-import "os"
+import (
+	"io/fs"
+	"os"
+)
 
 // partialSuffix is the sidecar a --partial transfer retains on interrupt.
 const partialSuffix = ".partial"
@@ -17,6 +20,21 @@ func (rt *Transfer) openPartialBasis(f *File) (in *os.File, size int64, ok bool)
 		return nil, 0, false
 	}
 	return in, st.Size(), true
+}
+
+// regularOrClose returns f and its info if f is a regular file. Otherwise it
+// closes f and returns a nil file, with what f was.
+func regularOrClose(f *os.File) (*os.File, fs.FileInfo, error) {
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if !st.Mode().IsRegular() {
+		f.Close()
+		return nil, st, nil
+	}
+	return f, st, nil
 }
 
 // retainPartial promotes the temp to "<name>.partial", keeping whichever is

@@ -22,9 +22,9 @@ import (
 	"github.com/runpod/rsync/rsyncd"
 )
 
-// push runs rsync from src into a daemon serving dest and returns the client's
-// and the daemon's verdicts.
-func push(t *testing.T, src, dest string, extraArgs ...string) (clientErr, daemonErr error) {
+// push runs rsync from src into a daemon serving dest, and fails the test
+// unless both ends report success.
+func push(t *testing.T, src, dest string, extraArgs ...string) {
 	t.Helper()
 	rsyncBin := rsynctest.TridgeOrGTFO(t, "needs an rsync client that speaks the daemon protocol")
 
@@ -59,15 +59,14 @@ func push(t *testing.T, src, dest string, extraArgs ...string) (clientErr, daemo
 	args := append([]string{"-a"}, extraArgs...)
 	args = append(args, src+"/", "rsync://"+ln.Addr().String()+"/vol/")
 	out, clientErr := exec.Command(rsyncBin, args...).CombinedOutput()
-	if clientErr != nil {
-		t.Logf("rsync %v: %v\n%s", args, clientErr, out)
-	}
 	select {
-	case daemonErr = <-served:
+	case daemonErr := <-served:
+		if clientErr != nil || daemonErr != nil {
+			t.Fatalf("rsync %v: client: %v, daemon: %v\n%s", args, clientErr, daemonErr, out)
+		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("daemon never finished the connection")
 	}
-	return clientErr, daemonErr
 }
 
 func write(t *testing.T, path, content string) {
@@ -110,17 +109,14 @@ func TestLongFileNames(t *testing.T) {
 			fileName := strings.Repeat("n", tt.len)
 			write(t, filepath.Join(src, "d", fileName), "payload")
 
-			clientErr, daemonErr := push(t, src, dest)
-			if clientErr != nil || daemonErr != nil {
-				t.Fatalf("client: %v, daemon: %v", clientErr, daemonErr)
-			}
+			push(t, src, dest)
 			requireContent(t, filepath.Join(dest, "d", fileName), "payload")
-			entries, err := os.ReadDir(dest)
+			entries, err := os.ReadDir(filepath.Join(dest, "d"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(entries) != 1 {
-				t.Errorf("temporaries left in the destination: %v", entries)
+				t.Errorf("temporaries left beside the file: %v", entries)
 			}
 		})
 	}
@@ -140,10 +136,7 @@ func TestDirectoryTimesSurviveTheirContents(t *testing.T) {
 		}
 	}
 
-	clientErr, daemonErr := push(t, src, dest)
-	if clientErr != nil || daemonErr != nil {
-		t.Fatalf("client: %v, daemon: %v", clientErr, daemonErr)
-	}
+	push(t, src, dest)
 	for _, dir := range []string{"d/sub", "d"} {
 		st, err := os.Stat(filepath.Join(dest, dir))
 		if err != nil {
@@ -158,15 +151,8 @@ func TestDirectoryTimesSurviveTheirContents(t *testing.T) {
 // --whole-file is what rsync uses between two local paths. A daemon that
 // refuses the flag fails the transfer outright.
 func TestWholeFile(t *testing.T) {
-	tests := []struct {
-		name string
-		flag string
-	}{
-		{name: "long flag", flag: "--whole-file"},
-		{name: "short flag", flag: "-W"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, flag := range []string{"--whole-file", "-W"} {
+		t.Run(flag, func(t *testing.T) {
 			tmp := t.TempDir()
 			src, dest := filepath.Join(tmp, "src"), filepath.Join(tmp, "dest")
 			write(t, filepath.Join(src, "changed"), "the new contents, longer than the old")
@@ -179,14 +165,42 @@ func TestWholeFile(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			clientErr, daemonErr := push(t, src, dest, tt.flag)
-			if clientErr != nil || daemonErr != nil {
-				t.Fatalf("client: %v, daemon: %v", clientErr, daemonErr)
-			}
+			push(t, src, dest, flag)
 			requireContent(t, filepath.Join(dest, "changed"), "the new contents, longer than the old")
 			requireContent(t, filepath.Join(dest, "new"), "new")
 		})
 	}
+}
+
+// -a is --devices and --specials together. A client that turns devices off
+// must still get its FIFOs across.
+func TestSpecialsWithoutDevices(t *testing.T) {
+	tmp := t.TempDir()
+	src, dest := filepath.Join(tmp, "src"), filepath.Join(tmp, "dest")
+	write(t, filepath.Join(src, "f"), "payload")
+	if err := syscall.Mkfifo(filepath.Join(src, "fifo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	push(t, src, dest, "--no-devices")
+	st, err := os.Lstat(filepath.Join(dest, "fifo"))
+	if err != nil || st.Mode().Type() != os.ModeNamedPipe {
+		t.Fatalf("fifo = %v, %v; want a FIFO", st, err)
+	}
+}
+
+// Under --partial the receiver writes to "<name>.partial.tmp". A name too long
+// for that suffix must still transfer.
+func TestLongFileNamesWithPartial(t *testing.T) {
+	tmp := t.TempDir()
+	src, dest := filepath.Join(tmp, "src"), filepath.Join(tmp, "dest")
+	short, long := strings.Repeat("s", 100), strings.Repeat("n", 250)
+	write(t, filepath.Join(src, short), "payload")
+	write(t, filepath.Join(src, long), "payload")
+
+	push(t, src, dest, "--partial")
+	requireContent(t, filepath.Join(dest, short), "payload")
+	requireContent(t, filepath.Join(dest, long), "payload")
 }
 
 // What is at a file's name in the destination is the tree owner's choice. The
@@ -225,10 +239,7 @@ func TestNonRegularEntriesAtAFilesNameAreReplaced(t *testing.T) {
 			}
 			tt.plant(t, filepath.Join(dest, "f"))
 
-			clientErr, daemonErr := push(t, src, dest)
-			if clientErr != nil || daemonErr != nil {
-				t.Fatalf("client: %v, daemon: %v", clientErr, daemonErr)
-			}
+			push(t, src, dest)
 			st, err := os.Lstat(filepath.Join(dest, "f"))
 			if err != nil || !st.Mode().IsRegular() {
 				t.Fatalf("f = %v, %v; want a regular file", st, err)

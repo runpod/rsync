@@ -61,11 +61,18 @@ func (rt *Transfer) recvFile1(f *File) error {
 		return nil
 	}
 
-	localFile, err := rt.openLocalFile(f)
-	if err != nil && !os.IsNotExist(err) {
-		rt.Logger.Printf("opening local file failed, continuing: %v", err)
+	// With --whole-file no sums were sent, so the data is all literal and
+	// there is no basis to open. Without PreservePerms the existing file is
+	// still opened, for its permissions.
+	var localFile *os.File
+	if !rt.Opts.WholeFile || !rt.Opts.PreservePerms {
+		var err error
+		localFile, err = rt.openLocalFile(f)
+		if err != nil && !os.IsNotExist(err) {
+			rt.Logger.Printf("opening local file failed, continuing: %v", err)
+		}
+		defer localFile.Close()
 	}
-	defer localFile.Close()
 	if err := rt.receiveData(f, localFile); err != nil {
 		return err
 	}
@@ -123,8 +130,11 @@ func (rt *Transfer) receiveData(f *File, localFile *os.File) error {
 	// a corrupt partial as a future basis.
 	discardPartial := false
 
-	if rt.Opts.KeepPartial {
-		tmpName := f.Name + partialSuffix + ".tmp"
+	// A name too long to carry the partial suffixes is written the default way:
+	// it cannot be resumed, but it is not refused.
+	const partialTmpSuffix = partialSuffix + ".tmp"
+	if rt.Opts.KeepPartial && len(filepath.Base(f.Name))+len(partialTmpSuffix) <= 255 {
+		tmpName := f.Name + partialTmpSuffix
 		partialName := f.Name + partialSuffix
 		tmp, err := rt.DestRoot.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {

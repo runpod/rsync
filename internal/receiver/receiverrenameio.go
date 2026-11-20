@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"unicode/utf8"
 )
 
 // openTempFileRoot creates a randomly named file in root and returns an open
@@ -13,7 +12,7 @@ import (
 // given, the file permissions can be controlled and patterns in the name are
 // not supported.  The name is always suffixed with a random number.
 func openTempFileRoot(root *os.Root, name string, perm os.FileMode) (string, *os.File, error) {
-	prefix := tempPrefix(name)
+	prefix := name
 
 	for attempt := 0; ; {
 		// Generate a reasonably random name which is unlikely to already
@@ -35,24 +34,6 @@ func openTempFileRoot(root *os.Root, name string, perm os.FileMode) (string, *os
 	}
 }
 
-// maxTempPrefix leaves room in a NAME_MAX (255 byte) file name for the random
-// suffix, a sign and up to 19 digits.
-const maxTempPrefix = 255 - 20
-
-// tempPrefix shortens name so that the temporary file made from it has a legal
-// name however long the file it stands in for is called. It cuts on a rune
-// boundary, since some filesystems refuse names that are not valid UTF-8.
-func tempPrefix(name string) string {
-	if len(name) <= maxTempPrefix {
-		return name
-	}
-	cut := maxTempPrefix
-	for cut > 0 && !utf8.RuneStart(name[cut]) {
-		cut--
-	}
-	return name[:cut]
-}
-
 type pendingFile struct {
 	root    *os.Root
 	tmpname string
@@ -62,7 +43,9 @@ type pendingFile struct {
 }
 
 func newPendingFile(root *os.Root, fn string, sync bool) (*pendingFile, error) {
-	tmpname, f, err := openTempFileRoot(root, "."+filepath.Base(fn), 0o600)
+	// A fixed name beside the file, as for symlinks: one derived from the
+	// file's own name overflows NAME_MAX for a long one.
+	tmpname, f, err := openTempFileRoot(root, filepath.Join(filepath.Dir(fn), ".rsync-tmp-"), 0o600)
 	if err != nil {
 		return nil, err
 	}

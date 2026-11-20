@@ -3,7 +3,6 @@ package rsyncchecksum
 import (
 	"encoding/binary"
 	"io"
-	"os"
 
 	"github.com/mmcloughlin/md4"
 )
@@ -63,15 +62,6 @@ func ReaderChecksum(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return h.Sum(nil), nil
-}
-
-func RootChecksum(root *os.Root, fn string) ([]byte, error) {
-	f, err := root.Open(fn)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return ReaderChecksum(f)
 }
 
 const Size = md4.Size

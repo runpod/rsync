@@ -12,14 +12,5 @@ func openRegular(root *os.Root, name string) (*os.File, fs.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, nil, err
-	}
-	if !st.Mode().IsRegular() {
-		f.Close()
-		return nil, st, nil
-	}
-	return f, st, nil
+	return regularOrClose(f)
 }
