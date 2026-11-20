@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -95,9 +94,6 @@ func requireContent(t *testing.T, path, want string) {
 // The receiver writes each file to a temporary named after it. That name must
 // stay legal however long the file's own name is.
 func TestLongFileNames(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("NAME_MAX is a POSIX limit")
-	}
 	tests := []struct {
 		name string
 		len  int
@@ -196,9 +192,6 @@ func TestWholeFile(t *testing.T) {
 // What is at a file's name in the destination is the tree owner's choice. The
 // transfer must replace it without opening it: opening a FIFO blocks for good.
 func TestNonRegularEntriesAtAFilesNameAreReplaced(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no FIFOs")
-	}
 	tests := []struct {
 		name  string
 		plant func(t *testing.T, path string)
