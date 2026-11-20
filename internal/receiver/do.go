@@ -110,7 +110,8 @@ func (rt *Transfer) Do(c *rsyncwire.Conn, fileList []*File, noReport bool) (*rsy
 	if err := eg.Wait(); err != nil {
 		return nil, err
 	}
-	if rt.retouchDirPerms /* || rt.retouchDirTimes */ {
+	// Nothing was written when only listing, and there is no destination.
+	if !rt.listOnly() && (rt.retouchDirPerms || rt.Opts.PreserveTimes) {
 		if err := rt.touchUpDirs(fileList); err != nil {
 			return nil, err
 		}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/runpod/rsync/internal/log"
+	"github.com/runpod/rsync/internal/rsyncopts"
 	"github.com/runpod/rsync/internal/rsyncwire"
 )
 
@@ -72,10 +73,14 @@ func TestRecoveredTurnsAPanicIntoAnError(t *testing.T) {
 
 // A panic on either of Do's goroutines must come back from Do as an error.
 func TestDoReturnsAPanicInTheTransferAsAnError(t *testing.T) {
-	// Opts without its DebugGTE func panics in the generator and the receiver.
-	rt := &Transfer{Logger: log.New(io.Discard), Opts: &TransferOpts{}, Conn: wireConn(0)}
-	_, err := rt.Do(rt.Conn, []*File{{Name: "f"}}, true)
-	if err == nil || !strings.Contains(err.Error(), "panic in ") {
-		t.Fatalf("Do = %v, want a recovered panic", err)
+	// A nil entry in the file list is dereferenced by the generator.
+	opts := &TransferOpts{
+		InfoGTE:  func(rsyncopts.InfoLevel, uint16) bool { return false },
+		DebugGTE: func(rsyncopts.DebugLevel, uint16) bool { return false },
+	}
+	rt := &Transfer{Logger: log.New(io.Discard), Opts: opts, Dest: "dest", Conn: wireConn(-1, -1)}
+	_, err := rt.Do(rt.Conn, []*File{nil}, true)
+	if err == nil || !strings.Contains(err.Error(), "panic in generator") {
+		t.Fatalf("Do = %v, want a recovered panic in the generator", err)
 	}
 }

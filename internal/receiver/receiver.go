@@ -74,28 +74,22 @@ func (rt *Transfer) recvFile1(f *File) error {
 
 func (rt *Transfer) openLocalFile(f *File) (*os.File, error) {
 	name := f.Name
-	in, err := rt.DestRoot.Open(name)
+	in, st, err := openRegular(rt.DestRoot, name)
 	if err != nil && rt.Opts.KeepPartial && os.IsNotExist(err) {
 		// Final absent: fall back to the retained partial as the delta basis.
 		name = f.Name + partialSuffix
-		in, err = rt.DestRoot.Open(name)
+		in, st, err = openRegular(rt.DestRoot, name)
 	}
 	if err != nil {
 		return nil, err
 	}
 	usedPartial := name != f.Name
 
-	st, err := in.Stat()
-	if err != nil {
-		return nil, err
-	}
-
-	if st.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", filepath.Join(rt.Dest, name))
-	}
-
-	if !st.Mode().IsRegular() {
-		return nil, nil
+	if in == nil {
+		if st.IsDir() {
+			return nil, fmt.Errorf("%s is a directory", filepath.Join(rt.Dest, name))
+		}
+		return nil, nil // not a regular file: no basis
 	}
 
 	if !rt.Opts.PreservePerms && !usedPartial {

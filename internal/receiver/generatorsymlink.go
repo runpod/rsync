@@ -34,6 +34,8 @@ func symlink(root *os.Root, oldname, newname string) error {
 		if err != nil {
 			return err
 		}
+		// A process that dies between the two calls leaves tmp behind, as
+		// renameio left its temporary directory.
 		if err := root.Rename(tmp, newname); err != nil {
 			root.Remove(tmp)
 			return err

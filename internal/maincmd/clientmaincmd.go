@@ -374,6 +374,7 @@ func ClientRun(osenv *rsyncos.Env, opts *rsyncopts.Options, conn io.ReadWriteClo
 			DebugGTE: opts.DebugGTE,
 
 			KeepPartial: opts.KeepPartial(),
+			WholeFile:   opts.WholeFile(),
 		},
 		Dest:     paths[0],
 		Env:      osenv,

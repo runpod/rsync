@@ -51,6 +51,9 @@ func (rt *Transfer) GenerateFiles(fileList []*File) error {
 	return nil
 }
 
+// touchUpDirs gives directories their final permissions and times once
+// nothing more is written into them: a directory may lack the write bit the
+// transfer needed, and creating its entries moved its mtime.
 func (rt *Transfer) touchUpDirs(fileList []*File) error {
 	for idx, f := range fileList {
 		if rt.Opts.DebugGTE(rsyncopts.DEBUG_TIME, 2) {
@@ -63,7 +66,7 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 		if rt.Opts.DryRun {
 			continue
 		}
-		if mode&syscall.S_IWUSR > 0 {
+		if mode&syscall.S_IWUSR > 0 && !rt.Opts.PreserveTimes {
 			continue // directory is writeable, no touchup needed
 		}
 		if err := rt.setPerms(f, mode); err != nil {
@@ -320,11 +323,14 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 		return nil
 	}
 
-	// TODO: if deltas are disabled, request the file in full
+	if rt.Opts.WholeFile {
+		return requestFullFile()
+	}
 
-	in, err := rt.DestRoot.Open(f.Name)
-	if err != nil {
-		rt.Logger.Printf("failed to open %s, continuing: %v", local, err)
+	// What was a regular file at the Lstat above may be something else by now.
+	in, st, err := openRegular(rt.DestRoot, f.Name)
+	if err != nil || in == nil {
+		rt.Logger.Printf("failed to open %s as a regular file, continuing: %v", local, err)
 		return requestFullFile()
 	}
 	defer in.Close()
