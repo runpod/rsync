@@ -21,6 +21,8 @@ func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
 	then := time.Unix(1_000_000_000, 0)
 	tests := []struct {
 		name string
+		// list is the directories transferred; a, b and c when empty.
+		list []string
 		// change is what happens to directory "b" before the touch-up.
 		change func(t *testing.T, dest string)
 	}{
@@ -32,6 +34,14 @@ func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
 		}},
 		{name: "directory was replaced by a file", change: func(t *testing.T, dest string) {
 			if err := os.Remove(filepath.Join(dest, "b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dest, "b"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "directory above it was replaced by a file", list: []string{"a", "b", "b/sub", "c"}, change: func(t *testing.T, dest string) {
+			if err := os.RemoveAll(filepath.Join(dest, "b")); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(dest, "b"), nil, 0o600); err != nil {
@@ -54,7 +64,11 @@ func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dest := t.TempDir()
 			var list []*File
-			for _, name := range []string{"a", "b", "c"} {
+			names := tt.list
+			if names == nil {
+				names = []string{"a", "b", "c"}
+			}
+			for _, name := range names {
 				if err := os.Mkdir(filepath.Join(dest, name), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -90,5 +104,33 @@ func TestTouchUpDirsSkipsWhatIsNoLongerADirectory(t *testing.T) {
 				t.Errorf("the file that replaced b was chmodded to %o", st.Mode().Perm())
 			}
 		})
+	}
+}
+
+// Only a directory that is gone is skipped. Being unable to look at one for
+// any other reason is the transfer's failure to report.
+func TestTouchUpDirsReportsOtherErrors(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root is not refused by a directory's mode")
+	}
+	dest := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dest, "locked", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Without search permission on "locked", "locked/sub" cannot be looked at.
+	if err := os.Chmod(filepath.Join(dest, "locked"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dest, "locked"), 0o755) })
+
+	rt := newTestTransfer(t, dest)
+	rt.Logger = log.New(io.Discard)
+	rt.Opts = &TransferOpts{
+		PreserveTimes: true,
+		DebugGTE:      func(rsyncopts.DebugLevel, uint16) bool { return false },
+	}
+	err := rt.touchUpDirs([]*File{{Name: "locked/sub", Mode: rsync.S_IFDIR | 0o750, ModTime: time.Unix(1_000_000_000, 0)}})
+	if !os.IsPermission(err) {
+		t.Fatalf("touchUpDirs = %v, want a permission error", err)
 	}
 }

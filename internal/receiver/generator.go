@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -72,8 +73,13 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 		// The tree's owner may have removed or replaced it since it was made.
 		// That is not this transfer failing, and a directory's mode must not
 		// go onto whatever took its name: skip it, as rsync's touch_up_dirs
-		// does, and carry on with the rest.
-		if st, err := rt.DestRoot.Lstat(f.Name); err != nil || !st.IsDir() {
+		// does, and carry on with the rest. Any other failure to look at it,
+		// a permission or I/O error for one, is still the transfer's.
+		st, err := rt.DestRoot.Lstat(f.Name)
+		if err != nil && !isGone(err) {
+			return err
+		}
+		if err != nil || !st.IsDir() {
 			if err == nil {
 				err = fmt.Errorf("it is %v", st.Mode().Type())
 			}
@@ -81,11 +87,17 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 			continue
 		}
 		// Removed between that check and this call is the same case.
-		if err := rt.setPerms(f, mode); err != nil && !os.IsNotExist(err) {
+		if err := rt.setPerms(f, mode); err != nil && !isGone(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// isGone reports whether err says the name is not there any more: it was
+// removed, or a directory above it was replaced by something that is not one.
+func isGone(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // rsync/generator.c:skip_file

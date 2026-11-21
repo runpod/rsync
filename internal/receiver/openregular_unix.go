@@ -10,13 +10,8 @@ import (
 
 // openRegular opens name beneath root for reading, but only if it is a regular
 // file; for anything else it returns a nil file and what is there. See the
-// Linux version for why. Without O_PATH the open itself cannot be avoided, so
-// O_NONBLOCK keeps a FIFO from blocking it and the type is checked on the
-// opened handle.
+// Linux version for why, and openRegularWith for what this one cannot close.
+// O_NONBLOCK keeps a FIFO swapped in after the check from blocking the open.
 func openRegular(root *os.Root, name string) (*os.File, fs.FileInfo, error) {
-	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	return regularOrClose(f)
+	return openRegularWith(root, name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW)
 }
