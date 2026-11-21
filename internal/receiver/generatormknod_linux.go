@@ -14,7 +14,9 @@ import (
 
 func (rt *Transfer) createDevice(f *File, st fs.FileInfo) error {
 	base := filepath.Base(f.Name)
-	parentDir, err := rt.DestRoot.OpenFile(filepath.Dir(f.Name), 0, 0)
+	// O_DIRECTORY: whatever is at the parent's name is never opened unless it
+	// is a directory.
+	parentDir, err := rt.DestRoot.OpenFile(filepath.Dir(f.Name), syscall.O_DIRECTORY, 0)
 	if err != nil {
 		return fmt.Errorf("Open(parent(%s)): %v", f.Name, err)
 	}

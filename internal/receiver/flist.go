@@ -165,7 +165,7 @@ func (rt *Transfer) receiveFileEntry(flags uint16, last *File) (*File, error) {
 	isSpecial := mode == rsync.S_IFIFO || mode == rsync.S_IFSOCK
 	isLink := mode == rsync.S_IFLNK
 
-	if rt.Opts.PreserveDevices && (isDev || isSpecial) {
+	if (rt.Opts.PreserveDevices && isDev) || (rt.Opts.PreserveSpecials && isSpecial) {
 		// TODO(protocol >= 28): rdev/major/minor handling
 		if flags&rsync.XMIT_SAME_RDEV_pre28 != 0 {
 			f.Rdev = last.Rdev

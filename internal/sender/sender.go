@@ -38,6 +38,12 @@ func (st *Transfer) SendFiles(fileList *fileList) error {
 			break
 		}
 
+		// The receiver picks the index; one outside the list must end the
+		// transfer, not index past the list or be echoed back.
+		if fileIndex < 0 || int(fileIndex) >= len(fileList.Files) {
+			return fmt.Errorf("receiver asked for file index %d, outside the %d-entry file list", fileIndex, len(fileList.Files))
+		}
+
 		if st.Opts.DryRun() {
 			if err := st.Conn.WriteInt32(fileIndex); err != nil {
 				return err

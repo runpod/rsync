@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -51,6 +52,9 @@ func (rt *Transfer) GenerateFiles(fileList []*File) error {
 	return nil
 }
 
+// touchUpDirs gives directories their final permissions and times once
+// nothing more is written into them: a directory may lack the write bit the
+// transfer needed, and creating its entries moved its mtime.
 func (rt *Transfer) touchUpDirs(fileList []*File) error {
 	for idx, f := range fileList {
 		if rt.Opts.DebugGTE(rsyncopts.DEBUG_TIME, 2) {
@@ -63,14 +67,37 @@ func (rt *Transfer) touchUpDirs(fileList []*File) error {
 		if rt.Opts.DryRun {
 			continue
 		}
-		if mode&syscall.S_IWUSR > 0 {
+		if mode&syscall.S_IWUSR > 0 && !rt.Opts.PreserveTimes {
 			continue // directory is writeable, no touchup needed
 		}
-		if err := rt.setPerms(f, mode); err != nil {
+		// The tree's owner may have removed or replaced it since it was made.
+		// That is not this transfer failing, and a directory's mode must not
+		// go onto whatever took its name: skip it, as rsync's touch_up_dirs
+		// does, and carry on with the rest. Any other failure to look at it,
+		// a permission or I/O error for one, is still the transfer's.
+		st, err := rt.DestRoot.Lstat(f.Name)
+		if err != nil && !isGone(err) {
+			return err
+		}
+		if err != nil || !st.IsDir() {
+			if err == nil {
+				err = fmt.Errorf("it is %v", st.Mode().Type())
+			}
+			rt.Logger.Printf("touchUpDirs: skipping %s, no longer a directory: %v", f.Name, err)
+			continue
+		}
+		// Removed between that check and this call is the same case.
+		if err := rt.setPerms(f, mode); err != nil && !isGone(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// isGone reports whether err says the name is not there any more: it was
+// removed, or a directory above it was replaced by something that is not one.
+func isGone(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // rsync/generator.c:skip_file
@@ -80,7 +107,12 @@ func (rt *Transfer) skipFile(f *File, st os.FileInfo) (bool, error) {
 	}
 
 	if rt.Opts.AlwaysChecksum {
-		checksum, err := rsyncchecksum.RootChecksum(rt.DestRoot, f.Name)
+		in, _, err := openRegular(rt.DestRoot, f.Name)
+		if err != nil || in == nil {
+			return false, err
+		}
+		defer in.Close()
+		checksum, err := rsyncchecksum.ReaderChecksum(in)
 		if err != nil {
 			return false, err
 		}
@@ -232,10 +264,11 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 		return nil
 	}
 
-	if rt.Opts.PreserveDevices && (mode == rsync.S_IFCHR ||
-		mode == rsync.S_IFBLK ||
-		mode == rsync.S_IFSOCK ||
-		mode == rsync.S_IFIFO) {
+	// -D is --devices and --specials together, and a client can ask for
+	// either on its own.
+	isDev := mode == rsync.S_IFCHR || mode == rsync.S_IFBLK
+	isSpecial := mode == rsync.S_IFSOCK || mode == rsync.S_IFIFO
+	if (rt.Opts.PreserveDevices && isDev) || (rt.Opts.PreserveSpecials && isSpecial) {
 		if err := rt.createDevice(f, st); err != nil {
 			return err
 		}
@@ -271,7 +304,7 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 
 	if os.IsNotExist(err) {
 		// Final absent: resume from a retained partial if one exists.
-		if rt.Opts.KeepPartial {
+		if rt.Opts.KeepPartial && !rt.Opts.WholeFile {
 			if pin, psize, ok := rt.openPartialBasis(f); ok {
 				defer pin.Close()
 				rt.Logger.Printf("resuming %s from partial (%d bytes)", f.Name, psize)
@@ -320,11 +353,17 @@ func (rt *Transfer) recvGenerator(idx int, f *File) error {
 		return nil
 	}
 
-	// TODO: if deltas are disabled, request the file in full
+	if rt.Opts.WholeFile {
+		return requestFullFile()
+	}
 
-	in, err := rt.DestRoot.Open(f.Name)
-	if err != nil {
-		rt.Logger.Printf("failed to open %s, continuing: %v", local, err)
+	// What was a regular file at the Lstat above may be something else by now.
+	in, st, err := openRegular(rt.DestRoot, f.Name)
+	if err != nil || in == nil {
+		if err == nil {
+			err = fmt.Errorf("it is %v, not a regular file", st.Mode().Type())
+		}
+		rt.Logger.Printf("not using %s as a delta basis, sending it whole: %v", local, err)
 		return requestFullFile()
 	}
 	defer in.Close()

@@ -34,6 +34,9 @@ type TransferOpts struct {
 	DebugGTE func(rsyncopts.DebugLevel, uint16) bool
 
 	KeepPartial bool
+
+	// WholeFile requests every changed file in full, with no delta basis.
+	WholeFile bool
 }
 
 type Transfer struct {

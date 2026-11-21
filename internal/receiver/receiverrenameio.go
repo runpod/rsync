@@ -43,7 +43,9 @@ type pendingFile struct {
 }
 
 func newPendingFile(root *os.Root, fn string, sync bool) (*pendingFile, error) {
-	tmpname, f, err := openTempFileRoot(root, "."+filepath.Base(fn), 0o600)
+	// A fixed name beside the file, as for symlinks: one derived from the
+	// file's own name overflows NAME_MAX for a long one.
+	tmpname, f, err := openTempFileRoot(root, filepath.Join(filepath.Dir(fn), ".rsync-tmp-"), 0o600)
 	if err != nil {
 		return nil, err
 	}

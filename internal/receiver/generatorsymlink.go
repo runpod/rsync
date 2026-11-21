@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build !windows
 
 package receiver
 
@@ -34,6 +34,7 @@ func symlink(root *os.Root, oldname, newname string) error {
 		if err != nil {
 			return err
 		}
+		// A crash between the two calls leaves tmp behind.
 		if err := root.Rename(tmp, newname); err != nil {
 			root.Remove(tmp)
 			return err

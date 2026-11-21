@@ -61,11 +61,18 @@ func (rt *Transfer) recvFile1(f *File) error {
 		return nil
 	}
 
-	localFile, err := rt.openLocalFile(f)
-	if err != nil && !os.IsNotExist(err) {
-		rt.Logger.Printf("opening local file failed, continuing: %v", err)
+	// With --whole-file no sums were sent, so the data is all literal and
+	// there is no basis to open. Without PreservePerms the existing file is
+	// still opened, for its permissions.
+	var localFile *os.File
+	if !rt.Opts.WholeFile || !rt.Opts.PreservePerms {
+		var err error
+		localFile, err = rt.openLocalFile(f)
+		if err != nil && !os.IsNotExist(err) {
+			rt.Logger.Printf("opening local file failed, continuing: %v", err)
+		}
+		defer localFile.Close()
 	}
-	defer localFile.Close()
 	if err := rt.receiveData(f, localFile); err != nil {
 		return err
 	}
@@ -74,28 +81,22 @@ func (rt *Transfer) recvFile1(f *File) error {
 
 func (rt *Transfer) openLocalFile(f *File) (*os.File, error) {
 	name := f.Name
-	in, err := rt.DestRoot.Open(name)
+	in, st, err := openRegular(rt.DestRoot, name)
 	if err != nil && rt.Opts.KeepPartial && os.IsNotExist(err) {
 		// Final absent: fall back to the retained partial as the delta basis.
 		name = f.Name + partialSuffix
-		in, err = rt.DestRoot.Open(name)
+		in, st, err = openRegular(rt.DestRoot, name)
 	}
 	if err != nil {
 		return nil, err
 	}
 	usedPartial := name != f.Name
 
-	st, err := in.Stat()
-	if err != nil {
-		return nil, err
-	}
-
-	if st.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", filepath.Join(rt.Dest, name))
-	}
-
-	if !st.Mode().IsRegular() {
-		return nil, nil
+	if in == nil {
+		if st.IsDir() {
+			return nil, fmt.Errorf("%s is a directory", filepath.Join(rt.Dest, name))
+		}
+		return nil, nil // not a regular file: no basis
 	}
 
 	if !rt.Opts.PreservePerms && !usedPartial {
@@ -129,10 +130,20 @@ func (rt *Transfer) receiveData(f *File, localFile *os.File) error {
 	// a corrupt partial as a future basis.
 	discardPartial := false
 
-	if rt.Opts.KeepPartial {
-		tmpName := f.Name + partialSuffix + ".tmp"
+	// A name too long to carry the partial suffixes is written the default way:
+	// it cannot be resumed, but it is not refused.
+	const partialTmpSuffix = partialSuffix + ".tmp"
+	if rt.Opts.KeepPartial && len(filepath.Base(f.Name))+len(partialTmpSuffix) <= 255 {
+		tmpName := f.Name + partialTmpSuffix
 		partialName := f.Name + partialSuffix
-		tmp, err := rt.DestRoot.OpenFile(tmpName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		// Never open what is already at the name: a FIFO would block the open
+		// and a device would take the data. The temp is rewritten from byte 0
+		// each attempt, so removing it loses nothing, and O_EXCL fails closed
+		// if something is put back in between.
+		if err := rt.DestRoot.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		tmp, err := rt.DestRoot.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}

@@ -8,12 +8,11 @@ const partialSuffix = ".partial"
 // openPartialBasis opens "<name>.partial" as the delta basis for f. ok is false
 // when no usable (regular, non-empty) partial exists.
 func (rt *Transfer) openPartialBasis(f *File) (in *os.File, size int64, ok bool) {
-	in, err := rt.DestRoot.Open(f.Name + partialSuffix)
-	if err != nil {
+	in, st, err := openRegular(rt.DestRoot, f.Name+partialSuffix)
+	if err != nil || in == nil {
 		return nil, 0, false
 	}
-	st, err := in.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Size() == 0 {
+	if st.Size() == 0 {
 		in.Close()
 		return nil, 0, false
 	}

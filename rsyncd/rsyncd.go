@@ -520,6 +520,7 @@ func (s *Server) handleConnReceiver(module *Module, crd *rsyncwire.CountingReade
 			DebugGTE: opts.DebugGTE,
 
 			KeepPartial: opts.KeepPartial(),
+			WholeFile:   opts.WholeFile(),
 		},
 		Dest: module.Path,
 		Env: &rsyncos.Env{
